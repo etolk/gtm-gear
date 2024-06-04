@@ -9,6 +9,7 @@ from oauth2client import tools
 import google.oauth2.credentials
 from google.oauth2 import service_account
 import googleapiclient.discovery
+import google.auth
 
 
 from ratelimit import limits, sleep_and_retry
@@ -65,6 +66,9 @@ class Service:
                     credentials = google.oauth2.credentials.Credentials(
                         **credentials
                     )
+            else:
+                # Attempt to use Application Default Credentials (ADC)
+                credentials, project = google.auth.default(scopes=self.scope)
 
             self.gtmservice  = googleapiclient.discovery.build(
                 self.api_name, self.api_version, credentials=credentials
