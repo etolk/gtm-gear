@@ -1,8 +1,15 @@
-import os
-import json
+import httplib2
+import os, json
+
+from apiclient.discovery import build
+from oauth2client import client
+from oauth2client import file
+from oauth2client import tools
+
+import google.oauth2.credentials
 from google.oauth2 import service_account
 import googleapiclient.discovery
-import google.auth
+
 
 from ratelimit import limits, sleep_and_retry
 
@@ -16,7 +23,7 @@ REQUESTS_PERIOD = 60
 SLEEP_TIME_DEFAULT = 6
 
 class Service:
-    def __init__(self, credentials=None, cache_prefix='', http=None, requestBuilder=None):
+    def __init__(self, credentials= None, cache_prefix='', http = None, requestBuilder = None):
         if "GTM_API_CONFIG_FOLDER" in os.environ:
             self.config_folder = os.environ["GTM_API_CONFIG_FOLDER"]
         else:
@@ -30,46 +37,76 @@ class Service:
         ]
 
         self.requests = REQUESTS_PER_PERIOD
-        self.period = REQUESTS_PERIOD        
+        self.period  = REQUESTS_PERIOD        
         self.execute = sleep_and_retry(limits(calls=self.requests, period=self.period)(self.execute_method))
 
-        # Check if credentials are provided
+        # If client_secrets provided
         if credentials is None:
-            # Attempt to use Application Default Credentials (ADC)
-            credentials, project = google.auth.default(scopes=self.scope)
+            self.client_secrets_path = os.path.join(
+                self.config_folder, "client_secrets.json"
+            )
+            self.sleep_time = SLEEP_TIME_DEFAULT
+            self.repository_path = os.path.join(
+                self.config_folder, "repository_path"
+            )
+            self.file_extension = "json"
+            self.storage_path = os.path.join(self.config_folder, "tagmanager.dat")
+            self.http = http
+            self.requestBuilder = requestBuilder
+            self.gtmservice = self.getService()
+        
         else:
             if isinstance(credentials, dict):
                 if "service_account_file" in credentials:
                     credentials = service_account.Credentials.from_service_account_file(
-                        credentials["service_account_file"], scopes=self.scope)
+                    credentials["service_account_file"], scopes=self.scope)
                 else:
                     # Load credentials from the session.
                     credentials = google.oauth2.credentials.Credentials(
                         **credentials
                     )
 
-        self.gtmservice = googleapiclient.discovery.build(
-            self.api_name, self.api_version, credentials=credentials
-        )
+            self.gtmservice  = googleapiclient.discovery.build(
+                self.api_name, self.api_version, credentials=credentials
+            )
 
         self.cache = Cache(self.config_folder, self.cache_prefix)
 
     def getService(self):
-        # The function is now simplified and doesn't need to handle OAuth flow directly
-        return self.gtmservice
+        if not self.http:
+            flow = client.flow_from_clientsecrets(
+                self.client_secrets_path,
+                scope=self.scope,
+                message=tools.message_if_missing(self.client_secrets_path),
+            )
+            storage = file.Storage(self.storage_path)
+            credentials = storage.get()
+            if credentials is None or credentials.invalid:
+                credentials = tools.run_flow(flow, storage, [])
+            self.http = credentials.authorize(http=httplib2.Http())
 
-    def get_cache(self, entity, cache=True):
+        # Build the service object.
+        if self.requestBuilder:
+            service = build(self.api_name, self.api_version, http=self.http, requestBuilder=self.requestBuilder, cache_discovery=False)
+            service.debug = True
+        else:
+            service = build(self.api_name, self.api_version, http=self.http, cache_discovery=False)
+            service.debug = False
+
+        return service
+
+    def get_cache(self, entity, cache = True):
         return self.cache.get_cache(entity, cache)
 
     def set_ratelimit(self, requests, period):
         self.requests = requests
-        self.period = period
+        self.period  = period
         self.execute = sleep_and_retry(limits(calls=self.requests, period=self.period)(self.execute_method))
 
-    def get_accounts(self, cache=True):
+    def get_accounts(self,cache =True):
         def requests_accounts(service):
             result = (
-                self.execute(service.gtmservice.accounts().list())
+            self.execute(service.gtmservice.accounts().list()                       )
             )
             return result
 
@@ -85,21 +122,23 @@ class Service:
         )
         return result
 
-    def get_permissions(self, account_id):
+    def get_permissions(self,account_id):
         account_path = "accounts/{}".format(account_id)
         result = (
-            self.execute(self.gtmservice.accounts().user_permissions().list(parent=account_path))
+            self.execute(self.gtmservice.accounts().user_permissions().list(parent=account_path)
+            )                     
         )
         return result
+  
 
     def get_containers(self, account_id, cache=True):
         def requests_containers(service, account_id):
             account_path = "accounts/{}".format(account_id)
             result = (
                 service.execute(service.gtmservice.accounts()
-                                .containers()
-                                .list(parent=account_path)
-                )
+                            .containers()
+                            .list(parent=account_path)
+                            )
             )
             return result
 
@@ -115,8 +154,9 @@ class Service:
         )
         return result
 
+
     def is_workspace_changed(self, workspace, entity_path, cache=True):
-        cache_file_path = self.cache.get_cache_file_path('workspace', entity_path)
+        cache_file_path = self.cache.get_cache_file_path('workspace',entity_path)
         cache_file_folder = self.cache.get_cache_file_folder(entity_path)
 
         workspace_cache = self.cache.get_cache_file(cache_file_path)
